@@ -38,9 +38,17 @@ export async function POST(req: NextRequest) {
     }
 
     const key = buildOtpRedisKey(email);
-    const existing = await redis.get<StoredOtpRecord>(key);
     const now = Date.now();
     const cooldownMs = getOtpResendCooldownSeconds() * 1000;
+    const existing = await redis.get<StoredOtpRecord>(key);
+
+    console.log("OTP existing record", {
+      email,
+      key,
+      existing,
+      now,
+      cooldownMs,
+    });
 
     if (existing && now - existing.lastSentAt < cooldownMs) {
       return NextResponse.json(
@@ -68,6 +76,9 @@ export async function POST(req: NextRequest) {
 
     await redis.set(key, record, { ex: expiresInSeconds });
 
+    const stored = await redis.get<StoredOtpRecord>(key);
+    console.log("OTP stored record", { email, key, stored });
+
     const from = process.env.EMAIL_FROM;
     const replyTo = process.env.EMAIL_REPLY_TO;
 
@@ -82,7 +93,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await resend.emails.send({
+    const { data, error } = await resend.emails.send({
       from,
       to: email,
       replyTo: replyTo || undefined,
@@ -95,6 +106,20 @@ export async function POST(req: NextRequest) {
         "If you did not request this code, you can ignore this email.",
       ].join("\n"),
     });
+
+    console.log("Resend send result", { data, error, email, from, replyTo });
+
+    if (error) {
+      console.error("Resend send error", error);
+      return NextResponse.json(
+        {
+          ok: false,
+          errorCode: "EMAIL_SEND_FAILED",
+          message: "Unable to send verification email.",
+        },
+        { status: 502 }
+      );
+    }
 
     return NextResponse.json({
       ok: true,
